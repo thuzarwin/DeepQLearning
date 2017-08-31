@@ -69,7 +69,7 @@ class DQN(object):
         self.steps_done += 1
         action_value = self.net.forward(state).detach()
         if prob > eps_threshold:
-            action_index = np.argmax(action_value)
+            action_index = np.argmax(action_value.data.numpy())
         else:
             action_index = np.random.randint(0, self.actions)
 
@@ -83,7 +83,7 @@ class DQN(object):
         x = cv2.cvtColor(cv2.resize(x, (80, 80)), cv2.COLOR_BGR2GRAY)
         _, x = cv2.threshold(x, 1, 255, cv2.THRESH_BINARY)
         x = np.multiply(x, 1 / 255.0)
-        x = np.reshape(x, (1, 80, 80))
+        x = np.reshape(x, (80, 80))
         return x, r, terminate
 
     # Store Memory
@@ -97,7 +97,7 @@ class DQN(object):
     def learn(self):
         minibatch = random.sample(self.replay_memory, self.batch_size)
         s_j_batch = Variable(torch.FloatTensor([d[0] for d in minibatch]))
-        a_batch = Variable(torch.LongTensor([d[1] for d in minibatch]))
+        a_batch = Variable(torch.LongTensor(np.array([d[1] for d in minibatch]).astype(int)))
         r_batch = Variable(torch.FloatTensor([d[2] for d in minibatch]))
         s_j1_batch = Variable(torch.FloatTensor([d[3] for d in minibatch]))
 
@@ -106,12 +106,15 @@ class DQN(object):
         for i in range(self.batch_size):
             terminal = minibatch[i][4]
             if terminal:
-                y_batch.append(r_batch[i])
+                y_batch.append(float(r_batch[i].data.numpy()[0]))
             else:
-                y_batch.append(r_batch[i]+self.gamma*np.max(j1_batch[i]))
+                y_batch.append(float((r_batch[i]+self.gamma*torch.max(j1_batch[i])).data.numpy()[0]))
 
-        q_value = self.net.forward(s_j_batch).gather(1, a_batch)
-        loss = self.loss(y_batch, q_value)
+        q_value =self.net.forward(s_j_batch)
+        q_value = q_value.gather(1, a_batch)
+        
+        y_batch = Variable(torch.FloatTensor(y_batch))
+        loss = self.loss(y_batch, q_value[1:])
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -122,13 +125,12 @@ class DQN(object):
         do_nothing = np.zeros(self.actions)
         do_nothing[0] = 1
         x_t, r_0, terminal = self.apply_action(do_nothing)
-        s_t = np.stack((x_t, x_t, x_t, x_t), axis=1)
-        s_t = Variable(torch.FloatTensor(s_t))
+        s_t = [x_t, x_t, x_t, x_t]
+        s_t = np.array(s_t)
         while "flapp bird" != "angry bird":
-            action_t, q_value, eps = self.choose_action(s_t)
+            action_t, q_value, eps = self.choose_action(Variable(torch.FloatTensor([s_t])))
             x_t1, r_t, terminal = self.apply_action(action_t)
-            print(s_t[0, 1].shape)
-            s_t1 = np.stack((s_t[0, 1], s_t[0, 2], s_t[0, 3], x_t1), axis=1)
+            s_t1 = [s_t[1], s_t[2], s_t[3], x_t1]
             self.store_memory(s_t, action_t, r_t, s_t1, terminal)
             if t > self.observe:
                 self.learn()
@@ -138,7 +140,7 @@ class DQN(object):
 
             action_index = np.argmax(action_t)
 
-            print("TIMESTEP", t, "/ EPSILON", eps, "/ ACTION", action_index, "/ REWARD", r_t, "/ Q_MAX %e" % np.max(q_value))
+            print("TIMESTEP", t, "/ EPSILON", eps, "/ ACTION", action_index, "/ REWARD", r_t, "/ Q_MAX:" , np.max(q_value.data.numpy()))
 
 
 config = {
@@ -147,10 +149,10 @@ config = {
     'replay_memory_size': 50000,
     'actions': 2,
     'gamma': 0.999,
-    'epsilon_start': 0.90,
+    'epsilon_start': 0.95,
     'epsilon_end': 0.0001,
     'epsilon_decay': 200,
-    'observe': 100000
+    'observe': 100
 
 }
 
