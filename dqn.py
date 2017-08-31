@@ -20,23 +20,20 @@ class ValueNet(nn.Module):
 
     def __init__(self, actions):
         super(ValueNet, self).__init__()
-        self.conv1 = nn.Conv2d(4, 32, 8, stride=4)
-        self.conv2 = nn.Conv2d(4, 32, 64, stride=2)
-        self.conv3 = nn.Conv2d(3, 64, 64, stride=1)
+        self.conv1 = nn.Conv2d(4, 32, 8, stride=4, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, 4, stride=2, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, 3, stride=1, padding=1)
         self.pool = nn.MaxPool2d(2)
-        self.fc1 = nn.Linear(256, 512)
+        self.fc1 = nn.Linear(1600, 512)
         self.fc2 = nn.Linear(512, actions)
 
     def forward(self, input_state):
         # input_state: [batch, 80x80x4]
-
         x = F.relu(self.conv1(input_state))
-        #x = self.pool(x)
         x = F.relu(self.conv2(x))
-        #x = self.pool(x)
         x = F.relu(self.conv3(x))
+        x = self.pool(x)
         x = x.view(-1, 1600)
-
         x = F.relu(self.fc1(x))
         x = self.fc2(x)
 
@@ -73,10 +70,11 @@ class DQN(object):
         action_value = self.net.forward(state).detach()
         if prob > eps_threshold:
             action_index = np.argmax(action_value)
-            action = np.zeros(self.actions)
-            action[action_index] = 1
         else:
-            action = np.random.randint(0, self.actions)
+            action_index = np.random.randint(0, self.actions)
+
+        action = np.zeros(self.actions)
+        action[action_index] = 1
         return action, action_value, eps_threshold
 
     # Apply action
@@ -84,6 +82,8 @@ class DQN(object):
         x, r, terminate = self.game_state.frame_step(action)
         x = cv2.cvtColor(cv2.resize(x, (80, 80)), cv2.COLOR_BGR2GRAY)
         _, x = cv2.threshold(x, 1, 255, cv2.THRESH_BINARY)
+        x = np.multiply(x, 1 / 255.0)
+        x = np.reshape(x, (1, 80, 80))
         return x, r, terminate
 
     # Store Memory
@@ -122,15 +122,14 @@ class DQN(object):
         do_nothing = np.zeros(self.actions)
         do_nothing[0] = 1
         x_t, r_0, terminal = self.apply_action(do_nothing)
-        s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
-
+        s_t = np.stack((x_t, x_t, x_t, x_t), axis=1)
+        s_t = Variable(torch.FloatTensor(s_t))
         while "flapp bird" != "angry bird":
             action_t, q_value, eps = self.choose_action(s_t)
             x_t1, r_t, terminal = self.apply_action(action_t)
-            x_t1 = np.reshape(x_t1, (80, 80, 1))
-            s_t1 = np.append(x_t1, s_t[:, :, :3], axis=2)
+            print(s_t[0, 1].shape)
+            s_t1 = np.stack((s_t[0, 1], s_t[0, 2], s_t[0, 3], x_t1), axis=1)
             self.store_memory(s_t, action_t, r_t, s_t1, terminal)
-
             if t > self.observe:
                 self.learn()
 
