@@ -15,6 +15,7 @@ import random
 sys.path.append("game/")
 import wrapped_flappy_bird as game
 
+
 class ValueNet(nn.Module):
 
     def __init__(self, actions):
@@ -41,6 +42,7 @@ class ValueNet(nn.Module):
 
         return x
 
+
 class DQN(object):
 
     def __init__(self, config):
@@ -52,6 +54,7 @@ class DQN(object):
         self.epsilon_decay = config['epsilon_decay']
         self.replay_memory_size = config['replay_memory_size']
         self.actions = config['actions']
+        self.observe = config['observe']
         self.steps_done = 0
 
         self.net = ValueNet(self.actions)
@@ -62,20 +65,19 @@ class DQN(object):
 
         self.game_state = game.GameState()
 
-
-
     # Choose action according to the state
     def choose_action(self, state):
         prob = random.random()
         eps_threshold = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * math.exp(-1.*self.steps_done/self.epsilon_decay)
+        self.steps_done += 1
+        action_value = self.net.forward(state).detach()
         if prob > eps_threshold:
-            action_value = self.net.forward(state)
             action_index = np.argmax(action_value)
             action = np.zeros(self.actions)
             action[action_index] = 1
         else:
             action = np.random.randint(0, self.actions)
-        return action
+        return action, action_value, eps_threshold
 
     # Apply action
     def apply_action(self, action):
@@ -85,8 +87,8 @@ class DQN(object):
         return x, r, terminate
 
     # Store Memory
-    def store_memory(self, s_t, a, r, s_t1):
-        transition = np.hstack((s_t, a, r , s_t1))
+    def store_memory(self, s_t, a, r, s_t1, terminal):
+        transition = (s_t, a, r, s_t1, terminal)
         if len(self.replay_memory) > self.replay_memory_size:
             self.replay_memory.popleft()
         self.replay_memory.append(transition)
@@ -99,7 +101,7 @@ class DQN(object):
         r_batch = Variable(torch.FloatTensor([d[2] for d in minibatch]))
         s_j1_batch = Variable(torch.FloatTensor([d[3] for d in minibatch]))
 
-        j1_batch = self.net.forward(s_j_batch)
+        j1_batch = self.net.forward(s_j1_batch).detach()
         y_batch = []
         for i in range(self.batch_size):
             terminal = minibatch[i][4]
@@ -107,18 +109,37 @@ class DQN(object):
                 y_batch.append(r_batch[i])
             else:
                 y_batch.append(r_batch[i]+self.gamma*np.max(j1_batch[i]))
-        loss = self.loss()
+
+        q_value = self.net.forward(s_j_batch).gather(1, a_batch)
+        loss = self.loss(y_batch, q_value)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-
     # play the Game
     def play(self):
-        pass
+        t = 0
+        do_nothing = np.zeros(self.actions)
+        do_nothing[0] = 1
+        x_t, r_0, terminal = self.apply_action(do_nothing)
+        s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
 
+        while "flapp bird" != "angry bird":
+            action_t, q_value, eps = self.choose_action(s_t)
+            x_t1, r_t, terminal = self.apply_action(action_t)
+            x_t1 = np.reshape(x_t1, (80, 80, 1))
+            s_t1 = np.append(x_t1, s_t[:, :, :3], axis=2)
+            self.store_memory(s_t, action_t, r_t, s_t1, terminal)
 
+            if t > self.observe:
+                self.learn()
 
+            s_t = s_t1
+            t += 1
+
+            action_index = np.argmax(action_t)
+
+            print("TIMESTEP", t, "/ EPSILON", eps, "/ ACTION", action_index, "/ REWARD", r_t, "/ Q_MAX %e" % np.max(q_value))
 
 
 config = {
@@ -129,102 +150,25 @@ config = {
     'gamma': 0.999,
     'epsilon_start': 0.90,
     'epsilon_end': 0.0001,
-    'epsilon_decay': 200
+    'epsilon_decay': 200,
+    'observe': 100000
 
 }
 
 
+def play_angry_bird():
 
-# def train_dqn(learning_rate=0.001, gamma=0.99, batch_size=32, epsilon=0.0001, replay_memory=50000):
-#
-#     actions = 2
-#     observe = 100000
-#     explore = 2000000
-#     dqn = DQN(actions=actions)
-#     criterian = nn.CrossEntropyLoss(size_average=False)
-#     optimizer = optim.RMSprop(dqn.parameters(), learning_rate,weight_decay=0.99, momentum=0.9)
-#     #SGD(dqn.parameters(), lr=learning_rate)
-#
-#     game_state = game.GameState()
-#
-#     memory_D = deque()
-#
-#     do_nothing = np.zeros(actions)
-#     do_nothing[0] = 1
-#
-#     def apply_action(action):
-#         x, r, terminate = game_state.frame_step(action)
-#         x = cv2.cvtColor(cv2.resize(x, (80, 80)), cv2.COLOR_BGR2GRAY)
-#         ret, x = cv2.threshold(x, 1, 255, cv2.THRESH_BINARY)
-#
-#         return x, r, terminate
-#
-#     def select_action(state):
-#         output = dqn(state)[0]
-#         action_t = np.zeros(actions)
-#         if random.random() < epsilon:
-#             print("----RANDOM ACRION----")
-#             action_index = random.randrange(actions)
-#             action_t[action_index] = 1
-#         else:
-#             action_index = np.argmax(output)
-#             action_t[action_index] = 1
-#         return action_t, action_index, output
-#
-#
-#
-#     x_t, r_0, isTerminated = apply_action(do_nothing)
-#
-#     s_t = np.stack((x_t, x_t, x_t, x_t), axis=2)
-#     t = 0
-#     while(1):
-#         a_t, a_index, output = select_action(s_t)
-#
-#         x_t1, r_t, isTerminated = apply_action(a_t)
-#         x_t1 = np.reshape(x_t1, (80, 80, 1))
-#         s_t1 = np.append(x_t1, s_t[:, :, :3], axis=2)
-#
-#         memory_D.append((s_t, a_t, r_t, s_t1))
-#
-#         if len(memory_D) > replay_memory:
-#             memory_D.popleft()
-#
-#         if t > observe:
-#             minibatch = random.sample(memory_D, batch_size)
-#             s_j_batch = [d[0] for d in minibatch]
-#             a_batch = [d[1] for d in minibatch]
-#             r_batch = [d[2] for d in minibatch]
-#             s_j1_batch = [d[3] for d in minibatch]
-#
-#             y_batch = []
-#
-#             j1_batch = dqn(s_j_batch)
-#
-#             for i in range(0, len(minibatch)):
-#                 terminal = minibatch[i][4]
-#                 # if terminal, only equals reward
-#                 if terminal:
-#                     y_batch.append(r_batch[i])
-#                 else:
-#                     y_batch.append(r_batch[i] + gamma * np.max(j1_batch[i]))
-#
-#             # train
-#             loss =
-#
-#
-#         s_t = s_t1
-#         t += 1
-#
-#         if t <= observe:
-#             state = "observe"
-#         elif t > observe and t <= observe + explore:
-#             state = "explore"
-#         else:
-#             state = "train"
-#
-#         print("TIMESTEP", t, "/ STATE", state, \
-#             "/ EPSILON", epsilon, "/ ACTION", a_index, "/ REWARD", r_t, \
-#             "/ Q_MAX %e" % np.max(output))
+    dqn = DQN(config)
+
+    dqn.play()
+
+
+if __name__ == '__main__':
+
+    play_angry_bird()
+
+
+
 
 
 
