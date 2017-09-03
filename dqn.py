@@ -54,9 +54,10 @@ class DQN(object):
         self.observe = config['observe']
         self.steps_done = 0
 
-        self.net = ValueNet(self.actions)
-        self.optimizer = optim.RMSprop(self.net.parameters(), self.learning_rate, weight_decay=0.99, momentum=0.9)
-        self.loss = nn.CrossEntropyLoss(size_average=False)
+        self.eval_net = ValueNet(self.actions)
+        self.target_net = ValueNet(self.actions)
+        self.optimizer = optim.RMSprop(self.eval_net.parameters(), self.learning_rate, weight_decay=0.99, momentum=0.9)
+        self.loss_func = nn.MSELoss()
 
         self.replay_memory = deque()
 
@@ -67,7 +68,7 @@ class DQN(object):
         prob = random.random()
         eps_threshold = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * math.exp(-1.*self.steps_done/self.epsilon_decay)
         self.steps_done += 1
-        action_value = self.net.forward(state).detach()
+        action_value = self.eval_net.forward(state).detach()
         if prob > eps_threshold:
             action_index = np.argmax(action_value.data.numpy())
         else:
@@ -95,13 +96,14 @@ class DQN(object):
 
     # Learn
     def learn(self):
+        self.target_net.load_state_dict(self.eval_net.state_dict())
         minibatch = random.sample(self.replay_memory, self.batch_size)
         s_j_batch = Variable(torch.FloatTensor([d[0] for d in minibatch]))
         a_batch = Variable(torch.LongTensor(np.array([d[1] for d in minibatch]).astype(int)))
         r_batch = Variable(torch.FloatTensor([d[2] for d in minibatch]))
         s_j1_batch = Variable(torch.FloatTensor([d[3] for d in minibatch]))
 
-        j1_batch = self.net.forward(s_j1_batch).detach()
+        j1_batch = self.target_net.forward(s_j1_batch).detach()
         y_batch = []
         for i in range(self.batch_size):
             terminal = minibatch[i][4]
@@ -110,11 +112,23 @@ class DQN(object):
             else:
                 y_batch.append(float((r_batch[i]+self.gamma*torch.max(j1_batch[i])).data.numpy()[0]))
 
-        q_value =self.net.forward(s_j_batch)
+        q_value = self.eval_net.forward(s_j_batch)
         q_value = q_value.gather(1, a_batch)
-        
+        q_value = q_value.view(self.batch_size, 1, 2)
+
         y_batch = Variable(torch.FloatTensor(y_batch))
-        loss = self.loss(y_batch, q_value[1:])
+        a_batch = a_batch.view(self.batch_size, 2, 1)
+
+        a_batch = a_batch.type(torch.FloatTensor)
+        q_ = torch.bmm(q_value, a_batch)
+        #print(q_.shape)
+        q_ = torch.squeeze(q_)
+        y_batch = torch.squeeze(y_batch)
+        #loss = (y_batch-q_value)
+        #print(loss)
+        loss = self.loss_func(q_, y_batch)
+
+        print(loss)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
@@ -152,7 +166,7 @@ config = {
     'epsilon_start': 0.95,
     'epsilon_end': 0.0001,
     'epsilon_decay': 200,
-    'observe': 100
+    'observe': 64
 
 }
 
